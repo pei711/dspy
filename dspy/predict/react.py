@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 from typing import TYPE_CHECKING, Any, Callable, get_args
 
@@ -242,7 +243,8 @@ class ReAct(Module):
                 continue
 
             try:
-                value = self.tools[tool_call.name](**(tool_call.args or {}))
+                args = _safe_copy_args(tool_call.args)
+                value = self.tools[tool_call.name](**args)
                 values.append(value)
                 is_errors.append(False)
                 if tool_call.name == "submit" and isinstance(value, dict):
@@ -265,7 +267,8 @@ class ReAct(Module):
                 continue
 
             try:
-                value = await self.tools[tool_call.name].acall(**(tool_call.args or {}))
+                args = _safe_copy_args(tool_call.args)
+                value = await self.tools[tool_call.name].acall(**args)
                 values.append(value)
                 is_errors.append(False)
                 if tool_call.name == "submit" and isinstance(value, dict):
@@ -412,6 +415,18 @@ def _ensure_tool_call_ids(tool_calls: ToolCalls, turn_index: int) -> ToolCalls:
             tool_call = tool_call.model_copy(update={"id": f"call_{turn_index}_{call_index}"})
         ensured.append(tool_call)
     return ToolCalls(tool_calls=ensured)
+
+
+def _safe_copy_args(args: dict[str, Any] | None) -> dict[str, Any]:
+    if not args:
+        return {}
+    try:
+        return copy.deepcopy(args)
+    except Exception:
+        try:
+            return copy.copy(args)
+        except Exception:
+            return dict(args)
 
 
 def _append_history_event(history: dspy.History, event: dict[str, Any]) -> None:

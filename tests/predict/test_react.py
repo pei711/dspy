@@ -803,3 +803,81 @@ def test_tool_observation_preserves_custom_type():
     ]
     assert len(images) == 2
     assert result.answer == "done"
+
+
+def test_react_tool_call_args_isolated_from_mutation():
+    def mutating_tool(lines: dict[str, list[str]]) -> str:
+        items = lines["items"]
+        packed = []
+        while items:
+            packed.append(items.pop(0))
+        return f"Packed {len(packed)} items."
+
+    react = dspy.ReAct("request -> answer", tools=[mutating_tool], max_iters=2)
+    original_items = ["notebooks", "folders"]
+    tool_call = dspy.ToolCalls.ToolCall(
+        name="mutating_tool",
+        args={"lines": {"items": list(original_items)}},
+    )
+    tool_calls = dspy.ToolCalls(tool_calls=[tool_call])
+    results, _final_outputs = react._execute_tool_calls(tool_calls)
+
+    assert results.tool_call_results[0].value == "Packed 2 items."
+    assert not results.tool_call_results[0].is_error
+    assert tool_call.args["lines"]["items"] == original_items
+
+
+@pytest.mark.asyncio
+async def test_react_async_tool_call_args_isolated_from_mutation():
+    async def mutating_tool(lines: dict[str, list[str]]) -> str:
+        items = lines["items"]
+        packed = []
+        while items:
+            packed.append(items.pop(0))
+        return f"Packed {len(packed)} items."
+
+    react = dspy.ReAct("request -> answer", tools=[mutating_tool], max_iters=2)
+    original_items = ["pens", "pencils"]
+    tool_call = dspy.ToolCalls.ToolCall(
+        name="mutating_tool",
+        args={"lines": {"items": list(original_items)}},
+    )
+    tool_calls = dspy.ToolCalls(tool_calls=[tool_call])
+    results, _final_outputs = await react._aexecute_tool_calls(tool_calls)
+
+    assert results.tool_call_results[0].value == "Packed 2 items."
+    assert not results.tool_call_results[0].is_error
+    assert tool_call.args["lines"]["items"] == original_items
+
+
+def test_react_end_to_end_tool_call_args_preserved_in_history():
+    def pack_order(lines: dict[str, list[str]]) -> str:
+        items = lines["items"]
+        packed = []
+        while items:
+            packed.append(items.pop(0))
+        return f"Packed {len(packed)} items."
+
+    lm = dspy.utils.DummyLM([
+        {
+            "next_thought": "Pack the items.",
+            "tool_calls": dspy.ToolCalls.from_dict_list([
+                {"name": "pack_order", "args": {"lines": {"items": ["notebooks", "folders"]}}},
+            ]),
+        },
+        {
+            "next_thought": "Done.",
+            "tool_calls": dspy.ToolCalls.from_dict_list([
+                {"name": "submit", "args": {"answer": "Packed 2 items: notebooks and folders."}},
+            ]),
+        },
+    ])
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        react = dspy.ReAct("request -> answer", tools=[pack_order], max_iters=3)
+        result = react(request="Pack notebooks and folders.")
+
+    assert result.answer == "Packed 2 items: notebooks and folders."
+    first_event = result.history.messages[0]
+    recorded_call = first_event["tool_calls"].tool_calls[0]
+    assert recorded_call.name == "pack_order"
+    assert recorded_call.args["lines"]["items"] == ["notebooks", "folders"]
